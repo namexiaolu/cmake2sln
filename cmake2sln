@@ -1,0 +1,155 @@
+import os
+import sys
+import xml.etree.ElementTree as ET
+import re
+# 注意后边不要有两个\\ 且不能用r""的形式，因为下边替换的时候可能会找不到
+# slnPath = "D:\\program\\Urho3dECS\\testall\\Urho3D-1.8\\Urho3D-1.8\\"
+slnPath = "D:\\3rdparty\\SDK3\\zlib-1.2.13"
+# slnPath = sys.argv[1]
+print(slnPath)
+
+
+# 替换每个vcxproj
+def replaceVcxproj(vcxprojPath):
+    with open(vcxprojPath, "r", encoding="utf-8") as f1:
+        txt = f1.read()
+
+    with open(vcxprojPath, "w+", encoding="utf-8") as f1:
+        temp = slnPath+"\\"
+        res = txt.replace(slnPath, "$(SolutionDir)")
+        res = res.replace(temp, "$(SolutionDir)")
+
+        f1.write(res)
+
+    with open(vcxprojPath, "w+", encoding="utf-8") as f1:
+        slnPathtemp = slnPath.replace('\\','/')
+        temp = slnPathtemp+"/"
+        res = res.replace(slnPathtemp, "$(SolutionDir)")
+        res = res.replace(temp, "$(SolutionDir)")
+        f1.write(res)
+
+# 删除配置中的cmake依赖
+def vcxprojDelCmakelists(vcxprojpath):
+    # 设置namespace，防止会增加‘sn0’
+    namespase = "http://schemas.microsoft.com/developer/msbuild/2003"
+    ET.register_namespace('',namespase)
+    root = ET.parse(vcxprojpath).getroot()
+    # 获取namespace 因为find的时候需要会自动加上namespace。所以先获取
+    # namespase = re.match(r'{.*}', root.tag).group(0)
+    namespase = '{' + namespase + '}'
+
+    # 找到包含cmakelist的上一层，以删除cmakelist
+    fatherlist =  root.findall(f".//{namespase}CustomBuild/..")
+    for father in fatherlist:
+        sonlist = father.findall(f'.//{namespase}CustomBuild')
+        for son in sonlist:
+            if( son.attrib["Include"].find("CMakeLists.txt") != -1):  # or son.attrib["Include"].find("CMakeFiles") != -1
+                print('删除CMakeLists.txt依赖')
+                father.remove(son)
+
+    fatherlist =  root.findall(f".//{namespase}Command/..")
+    for father in fatherlist:
+        sonlist = father.findall(f'.//{namespase}Command')
+        for son in sonlist:
+            if( son.text.find("cmake.exe")!= -1):
+                path_list = re.findall('.*?"(.*?)cmake.exe".*?', son.text)
+                for path in path_list:
+                    print(path)
+                    son.text = son.text.replace(path+"cmake.exe","cmake.exe")
+
+            if("ml64.exe" in son.text):
+                ml64list = re.findall('.*?"(.*?)ml64.exe".*?', son.text)
+                for ml64 in ml64list:
+                    son.text = son.text.replace(ml64 , "$(MsvcAnalysisPluginPath)\\")
+
+            if("MSBuild.exe" in son.text):
+                MSBuildlist = re.findall('.*?"(.*?)MSBuild.exe".*?', son.text)
+                for MSBuild in MSBuildlist:
+                    msbuildindex = son.text.find("MSBuild.exe")
+                    leftquot = son.text.rfind("=",0,msbuildindex)
+                    beforerepla =  son.text[leftquot+1:msbuildindex-1]
+                son.text = son.text.replace(beforerepla , "$(MSBuildBinPath)")
+            if(":INTERNAL" in son.text):
+                currenindex = son.text.find(":INTERNAL")
+                leftindex = son.text.find("=",currenindex)
+                rightindex = son.text.find("\"",leftindex)
+                beforerepla = son.text[leftindex+1:rightindex]
+                son.text = son.text.replace(beforerepla, "$(CurrentVsInstallRoot)")
+
+
+
+
+    # 保存一下
+    new_tree = ET.ElementTree(root)  # root为修改后的root
+    new_tree.write(vcxprojpath)
+
+# 取消sln对 all_project和zero_check的依赖
+def removeALLPROJandZEROCHECK(slnfile):
+    with open(slnfile, "r", encoding="utf-8") as f1:
+        txt = f1.read()
+        str_list = re.findall('.*?\nProject((?:.|\n)*?)EndProject\n.*?', txt)
+        for i in range(len(str_list)-1, -1, -1):
+            if "ZERO_CHECK.vcxproj" in str(str_list[i]):
+                txt = txt.replace("Project" + str_list[i] + "EndProject", "")
+            if "ALL_BUILD.vcxproj" in str(str_list[i]):
+                txt = txt.replace("Project"+str_list[i]+"EndProject","")
+
+    with open(slnfile, "w+", encoding="utf-8") as f1:
+        f1.write(txt)
+
+def setINSTALL(installFile):
+    # 读取XML文件内容
+    with open(installFile, "r") as f:
+        xml_content = f.read()
+
+    # 定义正则表达式模式
+    pattern = r"<PostBuildEvent>[\s\S]*?<Command>(.*?)</Command>[\s\S]*?</PostBuildEvent>"
+
+    # 使用findall函数找到所有匹配的模式
+    matches = re.findall(pattern, xml_content, re.DOTALL)
+
+    # 遍历所有匹配的模式，并在setlocal后面添加一行
+    for match in matches:
+        new_command = match.replace("setlocal", "setlocal\nset SolutionDir=$(SolutionDir)")
+        xml_content = xml_content.replace(match, new_command)
+
+    # 将修改后的XML内容写回文件
+    with open(installFile, "w") as f:
+        f.write(xml_content)
+
+# 设置cmake脚本中的路径
+def setCmakefile(cmakeFile):
+    # 打开文件并读取内容
+    with open(cmakeFile, "r") as f:
+        content = f.read()
+
+    # 在开头增加一行set(SolutionDir "$ENV{SolutionDir}")
+    content = "set(SolutionDir \"$ENV{SolutionDir}\")\n" + content
+
+    # 替换所有$(SolutionDir)为${SolutionDir}
+    content = content.replace("$(SolutionDir)", "${SolutionDir}")
+
+    # 将修改后的内容写回文件
+    with open(cmakeFile, "w") as f:
+        f.write(content)
+
+for i in os.walk(slnPath):
+    # print(i)
+    for filelist in i[2]:
+        if (filelist[-3:] == "sln"):
+            removeALLPROJandZEROCHECK(i[0]+"\\"+filelist)
+        if (filelist[len(filelist) - 7:] == "vcxproj" ):
+            print(i[0]+"\\"+filelist)
+            replaceVcxproj(i[0]+"\\"+filelist)
+            vcxprojDelCmakelists(i[0]+"\\"+filelist)
+        if (filelist[len(filelist) - 7:] == "filters" or filelist[len(filelist) - 14:] == "CMakeLists.txt" or filelist[len(filelist) - 5:] == "cmake"):
+            print(i[0]+"\\"+filelist)
+            replaceVcxproj(i[0]+"\\"+filelist)
+        if ("ZERO_CHECK.vcxproj" in filelist):
+            os.remove(i[0] + "\\" + filelist)
+        # 设置install的生成后命令
+        if (filelist[len(filelist) - 15:] == "INSTALL.vcxproj" ):
+            setINSTALL(i[0]+"\\"+filelist)
+        if(filelist[len(filelist) - 5:] == "cmake"):
+            setCmakefile(i[0]+"\\"+filelist)
+
